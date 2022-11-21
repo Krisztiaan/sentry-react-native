@@ -1,18 +1,19 @@
 /* eslint-disable max-lines */
-import { Transaction as TransactionType } from "@sentry/types";
-import { getGlobalObject, logger } from "@sentry/utils";
+import { Transaction as TransactionType, TransactionContext } from '@sentry/types';
+import { logger } from '@sentry/utils';
 
-import { BeforeNavigate } from "./reactnativetracing";
+import { RN_GLOBAL_OBJ } from '../utils/worldwide';
 import {
   InternalRoutingInstrumentation,
   OnConfirmRoute,
   TransactionCreator,
-} from "./routingInstrumentation";
+} from './routingInstrumentation';
 import {
+  BeforeNavigate,
   ReactNavigationTransactionContext,
   RouteChangeContextData,
-} from "./types";
-import { getBlankTransactionContext } from "./utils";
+} from './types';
+import { customTransactionSource, defaultTransactionSource, getBlankTransactionContext } from './utils';
 
 export interface NavigationRoute {
   name: string;
@@ -28,7 +29,11 @@ interface NavigationContainer {
 
 interface ReactNavigationOptions {
   /**
-   * The time the transaction will wait for route to mount before it is discarded.
+   * How long the instrumentation will wait for the route to mount after a change has been initiated,
+   * before the transaction is discarded.
+   * Time is in ms.
+   *
+   * Default: 1000
    */
   routeChangeTimeoutMs: number;
 }
@@ -46,7 +51,7 @@ const defaultOptions: ReactNavigationOptions = {
  * - If `_onStateChange` isn't called within `STATE_CHANGE_TIMEOUT_DURATION` of the dispatch, then the transaction is not sampled and finished.
  */
 export class ReactNavigationInstrumentation extends InternalRoutingInstrumentation {
-  public static instrumentationName: string = "react-navigation-v5";
+  public static instrumentationName: string = 'react-navigation-v5';
 
   private _navigationContainer: NavigationContainer | null = null;
 
@@ -101,15 +106,13 @@ export class ReactNavigationInstrumentation extends InternalRoutingInstrumentati
    */
   // eslint-disable-next-line @typescript-eslint/no-explicit-any, @typescript-eslint/explicit-module-boundary-types
   public registerNavigationContainer(navigationContainerRef: any): void {
-    const _global = getGlobalObject<{ __sentry_rn_v5_registered?: boolean }>();
-
     /* We prevent duplicate routing instrumentation to be initialized on fast refreshes
 
       Explanation: If the user triggers a fast refresh on the file that the instrumentation is
       initialized in, it will initialize a new instance and will cause undefined behavior.
      */
-    if (!_global.__sentry_rn_v5_registered) {
-      if ("current" in navigationContainerRef) {
+    if (!RN_GLOBAL_OBJ.__sentry_rn_v5_registered) {
+      if ('current' in navigationContainerRef) {
         // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
         this._navigationContainer = navigationContainerRef.current;
       } else {
@@ -118,11 +121,11 @@ export class ReactNavigationInstrumentation extends InternalRoutingInstrumentati
 
       if (this._navigationContainer) {
         this._navigationContainer.addListener(
-          "__unsafe_action__", // This action is emitted on every dispatch
+          '__unsafe_action__', // This action is emitted on every dispatch
           this._onDispatch.bind(this)
         );
         this._navigationContainer.addListener(
-          "state", // This action is emitted on every state change
+          'state', // This action is emitted on every state change
           this._onStateChange.bind(this)
         );
 
@@ -134,20 +137,20 @@ export class ReactNavigationInstrumentation extends InternalRoutingInstrumentati
             this._initialStateHandled = true;
           } else {
             logger.log(
-              "[ReactNavigationInstrumentation] Navigation container registered, but integration has not been setup yet."
+              '[ReactNavigationInstrumentation] Navigation container registered, but integration has not been setup yet.'
             );
           }
         }
 
-        _global.__sentry_rn_v5_registered = true;
+        RN_GLOBAL_OBJ.__sentry_rn_v5_registered = true;
       } else {
         logger.warn(
-          "[ReactNavigationInstrumentation] Received invalid navigation container ref!"
+          '[ReactNavigationInstrumentation] Received invalid navigation container ref!'
         );
       }
     } else {
       logger.log(
-        "[ReactNavigationInstrumentation] Instrumentation already exists, but register has been called again, doing nothing."
+        '[ReactNavigationInstrumentation] Instrumentation already exists, but register has been called again, doing nothing.'
       );
     }
   }
@@ -160,7 +163,7 @@ export class ReactNavigationInstrumentation extends InternalRoutingInstrumentati
   private _onDispatch(): void {
     if (this._latestTransaction) {
       logger.log(
-        `[ReactNavigationInstrumentation] A transaction was detected that turned out to be a noop, discarding.`
+        '[ReactNavigationInstrumentation] A transaction was detected that turned out to be a noop, discarding.'
       );
       this._discardLatestTransaction();
       this._clearStateChangeTimeout();
@@ -187,7 +190,7 @@ export class ReactNavigationInstrumentation extends InternalRoutingInstrumentati
 
     if (!this._navigationContainer) {
       logger.warn(
-        "[ReactNavigationInstrumentation] Missing navigation container ref. Route transactions will not be sent."
+        '[ReactNavigationInstrumentation] Missing navigation container ref. Route transactions will not be sent.'
       );
 
       return;
@@ -223,46 +226,59 @@ export class ReactNavigationInstrumentation extends InternalRoutingInstrumentati
             name: route.name,
             tags: {
               ...originalContext.tags,
-              "routing.route.name": route.name,
+              'routing.route.name': route.name,
             },
             data,
           };
 
-          let finalContext = this._beforeNavigate?.(updatedContext);
-
-          // This block is to catch users not returning a transaction context
-          if (!finalContext) {
-            logger.error(
-              `[ReactNavigationInstrumentation] beforeNavigate returned ${finalContext}, return context.sampled = false to not send transaction.`
-            );
-
-            finalContext = {
-              ...updatedContext,
-              sampled: false,
-            };
-          }
-
-          // Note: finalContext.sampled will be false at this point only if the user sets it to be so in beforeNavigate.
-          if (finalContext.sampled === false) {
-            logger.log(
-              `[ReactNavigationInstrumentation] Will not send transaction "${finalContext.name}" due to beforeNavigate.`
-            );
-          } else {
-            // Clear the timeout so the transaction does not get cancelled.
-            this._clearStateChangeTimeout();
-          }
-
+          const finalContext = this._prepareFinalContext(updatedContext);
           this._latestTransaction.updateWithContext(finalContext);
+
+          const isCustomName = updatedContext.name !== finalContext.name;
+          this._latestTransaction.setName(
+            finalContext.name,
+            isCustomName ? customTransactionSource : defaultTransactionSource,
+          );
+
           this._onConfirmRoute?.(finalContext);
         }
 
         this._pushRecentRouteKey(route.key);
         this._latestRoute = route;
+
+        // Clear the latest transaction as it has been handled.
+        this._latestTransaction = undefined;
       }
     }
+  }
 
-    // Clear the latest transaction as it has been handled.
-    this._latestTransaction = undefined;
+  /** Creates final transaction context before confirmation */
+  private _prepareFinalContext(updatedContext: TransactionContext): TransactionContext {
+    let finalContext = this._beforeNavigate?.({ ...updatedContext });
+
+    // This block is to catch users not returning a transaction context
+    if (!finalContext) {
+      logger.error(
+        `[ReactNavigationInstrumentation] beforeNavigate returned ${finalContext}, return context.sampled = false to not send transaction.`
+      );
+
+      finalContext = {
+        ...updatedContext,
+        sampled: false,
+      };
+    }
+
+    // Note: finalContext.sampled will be false at this point only if the user sets it to be so in beforeNavigate.
+    if (finalContext.sampled === false) {
+      logger.log(
+        `[ReactNavigationInstrumentation] Will not send transaction "${finalContext.name}" due to beforeNavigate.`
+      );
+    } else {
+      // Clear the timeout so the transaction does not get cancelled.
+      this._clearStateChangeTimeout();
+    }
+
+    return finalContext;
   }
 
   /** Pushes a recent route key, and removes earlier routes when there is greater than the max length */
@@ -289,7 +305,7 @@ export class ReactNavigationInstrumentation extends InternalRoutingInstrumentati
    *
    */
   private _clearStateChangeTimeout(): void {
-    if (typeof this._stateChangeTimeout !== "undefined") {
+    if (typeof this._stateChangeTimeout !== 'undefined') {
       clearTimeout(this._stateChangeTimeout);
       this._stateChangeTimeout = undefined;
     }
@@ -303,10 +319,10 @@ export class ReactNavigationInstrumentation extends InternalRoutingInstrumentati
 export const ReactNavigationV5Instrumentation = ReactNavigationInstrumentation;
 
 export const BLANK_TRANSACTION_CONTEXT = {
-  name: "Route Change",
-  op: "navigation",
+  name: 'Route Change',
+  op: 'navigation',
   tags: {
-    "routing.instrumentation":
+    'routing.instrumentation':
       ReactNavigationInstrumentation.instrumentationName,
   },
   data: {},

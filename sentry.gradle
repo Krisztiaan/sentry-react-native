@@ -66,6 +66,15 @@ gradle.projectsEvaluated {
           releaseName = currentVariant[1]
           versionCode = currentVariant[2]
 
+          try {
+            if (versionCode instanceof String) {
+                versionCode = Integer.parseInt(versionCode)
+                versionCode = Math.abs(versionCode)
+            }
+          } catch (NumberFormatException e) {
+            project.logger.info("versionCode: '$versionCode' isn't an Integer, using the plain value.")
+          }
+
           // The Sentry server distinguishes source maps by release (`--release` in the command
           // below) and distribution identifier (`--dist` below).  Give the task a unique name
           // based on where we're uploading to.

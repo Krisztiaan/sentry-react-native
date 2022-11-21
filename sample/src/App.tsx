@@ -19,17 +19,16 @@ import ReduxScreen from './screens/ReduxScreen';
 import {store} from './reduxApp';
 import {SENTRY_INTERNAL_DSN} from './dsn';
 
-const reactNavigationInstrumentation = new Sentry.ReactNavigationInstrumentation(
-  {
+const reactNavigationInstrumentation =
+  new Sentry.ReactNavigationInstrumentation({
     routeChangeTimeoutMs: 500, // How long it will wait for the route change to complete. Default is 1000ms
-  },
-);
+  });
 Sentry.init({
   // Replace the example DSN below with your own DSN:
   dsn: SENTRY_INTERNAL_DSN,
   debug: true,
-  beforeSend: (e) => {
-    console.log('Event beforeSend:', e);
+  beforeSend: (e, hint) => {
+    console.log('Event beforeSend:', e, 'hint:', hint);
     return e;
   },
   // This will be called with a boolean `didCallNativeInit` when the native SDK has been contacted.
@@ -60,8 +59,9 @@ Sentry.init({
   tracesSampleRate: 1.0,
   // Sets the `release` and `dist` on Sentry events. Make sure this matches EXACTLY with the values on your sourcemaps
   // otherwise they will not work.
-  release: '1.2.3',
-  dist: `1.2.3.0`,
+  // release: 'myapp@1.2.3+1',
+  // dist: `1`,
+  attachStacktrace: true,
 });
 
 const Stack = createStackNavigator();
