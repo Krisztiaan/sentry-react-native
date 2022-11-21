@@ -5,9 +5,16 @@ import {
   Package,
   Response,
   Severity,
+  Status,
   User,
 } from "@sentry/types";
-import { logger, normalize, SentryError, walk } from "@sentry/utils";
+import {
+  dropUndefinedKeys,
+  logger,
+  normalize,
+  SentryError,
+  walk,
+} from "@sentry/utils";
 import { NativeModules, Platform } from "react-native";
 
 import {
@@ -73,7 +80,7 @@ export const NATIVE: SentryNativeWrapper = {
     if (!this.enableNative) {
       return {
         reason: `Event was skipped as native SDK is not enabled.`,
-        status: "skipped",
+        status: Status.Skipped,
       };
     }
 
@@ -82,9 +89,6 @@ export const NATIVE: SentryNativeWrapper = {
     }
 
     const event = this._processLevels(_event);
-
-    // Delete this metadata as this should not be sent to Sentry.
-    delete event.sdkProcessingMetadata;
 
     const header = {
       event_id: event.event_id,
@@ -158,12 +162,12 @@ export const NATIVE: SentryNativeWrapper = {
 
     if (envelopeWasSent) {
       return {
-        status: "success",
+        status: Status.Success,
       };
     }
 
     return {
-      status: "failed",
+      status: Status.Failed,
     };
   },
 
@@ -486,10 +490,14 @@ export const NATIVE: SentryNativeWrapper = {
   }): { [key: string]: string } {
     const serialized: { [key: string]: string } = {};
 
-    Object.keys(data).forEach((dataKey) => {
-      const value = data[dataKey];
+    const cleanData = dropUndefinedKeys(data);
+
+    Object.keys(cleanData).forEach((dataKey) => {
+      const value = cleanData[dataKey];
       serialized[dataKey] =
-        typeof value === "string" ? value : JSON.stringify(value, walk);
+        typeof value === "string"
+          ? value
+          : JSON.stringify(dropUndefinedKeys(value), walk);
     });
 
     return serialized;
